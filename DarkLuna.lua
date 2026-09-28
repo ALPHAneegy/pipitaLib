@@ -192,7 +192,7 @@ local lib = {}
 lib.__index = lib
 lib.Version = ""
 -- Huella: si el executor carga otra version, el numero no coincide con este.
-lib.Build = "lunadark-1.4.0-b08-stats-themes"
+lib.Build = "lunadark-1.4.0-b09-registry"
 
 
 --[[ CONFIG ]]--
@@ -1160,6 +1160,21 @@ local ElementKinds = {
 	"Checkbox", "Combobox", "ButtonGroup", "TextArea", "ColorPicker", "Info",
 }
 
+--[[ REGISTRO DE ELEMENTOS ]]--
+-- La pestana "Config" de un hub necesita saber que elementos existen (kind,
+-- nombre, lectura/escritura de valor y callback) para guardar y restaurar el
+-- estado de la UI. Solo entran los que tienen valor propio; un Button o una
+-- Label no forman parte de una configuracion.
+local elementRegistry = {}
+local elementSequence = 0
+local registryKinds = {}
+for _, registryKind in ipairs({
+	"Toggle", "Slider", "Input", "Dropdown", "Progress",
+	"Keybind", "Checkbox", "Combobox", "ButtonGroup", "TextArea", "ColorPicker",
+}) do
+	registryKinds[registryKind] = true
+end
+
 local function makeRow(page, height, automatic)
 	local order = page.order
 	page.order = order + 1
@@ -1321,6 +1336,28 @@ installElementMethods = function(target, page)
 			local options = applyLegacySignature(kind, normalizeOptions(a, b), b, c, d, e)
 			local ok, result = pcall(Elements[kind], page, options)
 			if ok then
+				if registryKinds[kind] and type(result.SetValue) == "function" then
+					elementSequence = elementSequence + 1
+					local id = elementSequence
+					local entry = {
+						Id = id,
+						Kind = kind,
+						Name = tostring(options.Name or ""),
+						GetValue = function() return result:GetValue() end,
+						SetValue = function(value) return result:SetValue(value) end,
+						Callback = options.Callback,
+					}
+					-- PersistSet simula "el usuario cambio este valor": escribe el
+					-- valor y avisa una sola vez al callback. TextArea ya llama al
+					-- callback dentro de SetValue, asi que no se duplica.
+					entry.PersistSet = function(value)
+						result:SetValue(value)
+						if kind ~= "TextArea" and type(options.Callback) == "function" then
+							options.Callback(value)
+						end
+					end
+					elementRegistry[#elementRegistry + 1] = entry
+				end
 				return result
 			end
 			warnElement(kind, result)
@@ -4266,6 +4303,8 @@ function lib:Unload()
 		Windows[index]:Destroy()
 	end
 	clearTable(Windows)
+	clearTable(elementRegistry)
+	elementSequence = 0
 	if screen and screen.Parent then
 		screen:Destroy()
 	end
@@ -4273,6 +4312,23 @@ end
 
 function lib:GetWindows()
 	return Windows
+end
+
+function lib:GetElements()
+	local snapshot = {}
+	for index = 1, #elementRegistry do
+		local entry = elementRegistry[index]
+		snapshot[index] = {
+			Id = entry.Id,
+			Kind = entry.Kind,
+			Name = entry.Name,
+			GetValue = entry.GetValue,
+			SetValue = entry.SetValue,
+			PersistSet = entry.PersistSet,
+			Callback = entry.Callback,
+		}
+	end
+	return snapshot
 end
 
 function lib:GetAccent()
